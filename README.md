@@ -6,13 +6,13 @@
 ---
 ---
 
-<img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/be1cee2e-7fbf-473a-8479-24996d4025e2" />
+<img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/b6516b11-52de-4000-849f-5da007c71968" />
 
 ---
 
-# Zevo™ ELF Image Binary File Format — Internal Structure Specification
+## Zevo™ ELF Image Binary File Format — Internal Structure Specification
 
-## An 5D Artificial Intelligence Virtual Assistant
+### An 5D AI-Driven Community Virtual Assistance
 
 **PHD AI. Computer Engineering, Davada Beni Zaita and Zevo Community Teams**
 
@@ -40,7 +40,7 @@ The Zevo AI-Driven Core is implemented in **pure-function wrappers on ANSI C89/9
 | Field | Value |
 |---|---|
 | Title | **Zevo™** |
-| Subtitle | **An 5D artificial intelligence virtual assistant** |
+| Subtitle | **An 5D AI-Driven Community Virtual Assistance** |
 | Character | Zevo — original AI Avatars animated character |
 | Target ABI | System V x86_64 |
 | Compliance | GNU/POSIX |
