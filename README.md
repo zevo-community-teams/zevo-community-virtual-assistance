@@ -394,15 +394,15 @@ static long zevo_sys3(long n, long a1, long a2, long a3)
 The pipeline is a **pure fold** `F : Inputs → zevo_vec5d`, run under the FSM state `FUSE`, with all weights drawn from `.zevo.meta` and all code paths branch-deterministic (no NaN, no denormals — set `MXCSR` to FTZ+DAZ).
 
 ```
-Text Raw   ─▶ NFC normalize ─▶ byte histogram H_t ───────┐
-Audio PCM  ─▶ 48 kHz/24 LE ─▶ STFT(1024,256) ─▶ H_a ─────┤
-Image BGRA ─▶ 8K HDR ─▶ BGRA→linear ─▶ H_i ──────────────┼─▶ Fuse_5D ─▶ zevo_vec5d
-Video BGRA ─▶ 60 fps ─▶ Δ-frame ─▶ H_v ──────────────────┤
-                                                          │
-                            Shannon entropy  H(p)=-Σ p log2 p
-                                                          │
-                                                          ▼
-                                            (O, X, Y, Z, R) + quaternion
+Text Raw   ─▶ NFC normalize ─▶ byte histogram H_t ───────────────┐
+Audio PCM  ─▶ 48 kHz/24 LE  ─▶ STFT(1024,256) ─▶ H_a ───────────┤
+Image BGRA ─▶ 8K HDR        ─▶ BGRA→linear ─▶ H_i ──────────────┼─▶ Fuse_5D ─▶ zevo_vec5d
+Video BGRA ─▶ 60 fps        ─▶ Δ-frame ─▶ H_v ──────────────────┤
+                                                                  │
+                                                  Shannon entropy  H(p)=-Σ p log2 p
+                                                                  │
+                                                                  ▼
+                                                    (O, X, Y, Z, R) + quaternion
 ```
 
 **Fusion:**
@@ -556,7 +556,7 @@ Everything on the core side is `const` after load. The only mutable state is (a)
 ## 13. Zevo™ — Avatar, Naming, Trademark
 
 - Title: **Zevo™**
-- Subtitle: **An 5D artificial intelligence virtual assistant**
+- Subtitle: **An 5D artificial intelligence community virtual assistant**
 - Avatar: original AI Avatar animated character, no Pixar assets, no derived models, no trademark conflict.
 - Animation rigs (if bundled) are stored as `zevo_vec5d` + quaternions inside `.zevo.vectors`, subject to the same fs-verity seal as weights.
 
