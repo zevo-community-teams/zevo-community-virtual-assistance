@@ -113,9 +113,9 @@ A vector whose declared `align` is **not** one of `{ 32, 64 }` MUST cause the re
 | File | `zevo.model.alignment` | Reasoning |
 |---|---|---|
 | `Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin` | `64` | 64-byte alignment enables AVX-512 loads for Q8_0 blocks |
-| `Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin` | `64` | Same — Q4_0 blocks are 32 elements; 64-byte alignment covers AVX-512 access |
+| `Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin` | `32` | Same — Q4_0 blocks are 32 elements; 32-byte alignment covers AVX/AVX-2 access |
 
-Both files declare `64` as `zevo.model.alignment`. The `32`-byte alignment remains permitted for smaller deployments and is reserved in the schema.
+Declare `64` as `zevo.model.alignment` or The `32`-byte alignment remains permitted for smaller deployments and is reserved in the schema.
 
 ### §3.3 Alignment Rule
 
