@@ -3,6 +3,612 @@
 ---
 ---
 
+# Zevo™ ELF Image Binary Format — Internal Structure Specification
+### Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin / Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin
+**Subtitle:** *An 5D artificial intelligence virtual assistant*
+
+---
+
+## 0. Framing — What This Document Fixes
+
+This is a **focused internal-structure specification** of the x86_64 `ET_DYN` ELF Image binary container used by the Zevo AI-Driven Core Virtual Assistance to host:
+
+- **metadata** (KV+info)
+- **vectors** (5D OLAP spherical, non-abstract)
+- **weights** (Q4_0 / Q8_0, quantized LLM vectors)
+
+for the two target artifacts:
+
+| Artifact | Quant | Approx. size | Purpose |
+|---|---|---|---|
+| `Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin` | Q4_0 | ~18–20 GB | Edge / community tier |
+| `Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin` | Q8_0 | ~64–68 GB | Core / datacenter tier |
+
+The container is mapped **read-only** via `mmap(MAP_PRIVATE)`, protected by **fs-verity**, aligned to **32/64-bit boundaries** as declared, and exposed only through a **published IPC API** to a **weight-free, stateless, web-responsive client**.
+
+All code below is **ANSI C89/90**, System V x86_64 ABI, GNU/POSIX compliant. Inline assembly is used only for the `syscall`/`sysenter` boundary. Functional-paradigm intent is documented in `/* ... */` block comments adjacent to every pure wrapper.
+
+---
+
+## 1. The ELF Image — Why ET_DYN, Not ET_EXEC
+
+The brief mandates **`ELF Image ET_DYN`**. This is deliberate:
+
+```
+ET_DYN (PIE) is position-independent, but the Zevo container is NOT
+executed as a program. Its ET_DYN header is used as a *self-describing,
+kernel-verifiable envelope* whose PT_LOAD segments carry weights,
+metadata and vectors. The only executable bytes are a single thin
+.text page containing a syscall trampoline; everything else is
+PROT_READ, non-executable, and fs-verity-sealed.
+```
+
+Consequences:
+
+- `PT_GNU_STACK` → `PF_R|PF_W`, **no `PF_X`**.
+- `.text` is a single 4 KiB page; rest of image has no `PF_X`.
+- `PT_GNU_RELRO` covers the manifest and KV region.
+- Kernel `binfmt_elf` can load it for auditing; we never `execve` it directly — we `mmap` its `PT_LOAD` regions by hand for predictable layout.
+
+---
+
+## 2. Internal Structure — Top-Down Layout
+
+Every region begins on an **ext4 page boundary (4096 B)**. Every internal field is aligned to **32 B or 64 B** as stated. Padding is zero-filled and excluded from digest coverage.
+
+```
+┌──────────────────────────────────────────────────────────────────┐  0x000000
+│ Elf64_Ehdr (64 B)  · e_type = ET_DYN                             │
+├──────────────────────────────────────────────────────────────────┤  0x000040
+│ Elf64_Phdr[0..N-1] (N ≤ 8 × 56 B = 448 B)                        │
+├──────────────────────────────────────────────────────────────────┤  0x000200
+│ .zevo.note      ← SHT_NOTE: vendor "ZEVO", type=0x5A45564F       │
+│                    payload = zevo_manifest (page-padded)         │
+├──────────────────────────────────────────────────────────────────┤  0x001000  ◄ page
+│ .zevo.meta      ← KV+info records, 64-B aligned, sorted by hash  │
+├──────────────────────────────────────────────────────────────────┤  ◄ page
+│ .zevo.vectors   ← 5D OLAP spherical vectors (concrete POD)       │
+├──────────────────────────────────────────────────────────────────┤  ◄ page
+│ .zevo.weights   ← Q4_0 / Q8_0 blocks, 64-B stride per row        │
+├──────────────────────────────────────────────────────────────────┤  ◄ page
+│ .zevo.merkle    ← per-segment SHA-256 roots + fs-verity root     │
+├──────────────────────────────────────────────────────────────────┤  ◄ page
+│ .zevo.text      ← syscall/sysenter trampoline ONLY (RX, 1 page)  │
+├──────────────────────────────────────────────────────────────────┤  ◄ page
+│ zero padding to 4096 multiple                                    │
+└──────────────────────────────────────────────────────────────────┘  EOF
+```
+
+### 2.1 Region order rationale
+
+1. **note** first — kernel and userspace can validate identity before touching any payload.
+2. **meta** second — every subsequent region is described by KV records; a reader that trusts only `.zevo.note` can still discover layout.
+3. **vectors** third — small, needed to interpret weights at runtime.
+4. **weights** fourth — dominant by size; placed so its end aligns to a page boundary for clean truncation.
+5. **merkle** fifth — digest over everything preceding it.
+6. **text** last — smallest, most-restricted, no data dependencies on weights.
+
+---
+
+## 3. Headers and Alignment Contract (C89)
+
+```c
+/* zevo_layout.h — ANSI C89/90. No VLAs, no dynamic allocation. */
+#ifndef ZEVO_LAYOUT_H
+#define ZEVO_LAYOUT_H
+
+#include <stddef.h>
+
+#if !defined(__GNUC__)
+#  error "Zevo requires GNU/POSIX (GCC or Clang)."
+#endif
+
+typedef unsigned char      zevo_u8;
+typedef unsigned short     zevo_u16;
+typedef unsigned int       zevo_u32;
+typedef unsigned long long zevo_u64;
+typedef signed   int       zevo_i32;
+typedef float              zevo_f32;
+typedef double             zevo_f64;
+
+#define ZEVO_ALIGN_32   32u
+#define ZEVO_ALIGN_64   64u
+#define ZEVO_PAGE_BITS  12u
+#define ZEVO_PAGE       (1u << ZEVO_PAGE_BITS)   /* 4096 */
+
+#define ZEVO_MAGIC0 0x5A45564Fu   /* 'ZEVO' LE */
+#define ZEVO_MAGIC1 0x494D4731u   /* 'IMG1' LE */
+#define ZEVO_VER    0x00010000u   /* 1.0.0     */
+
+/* Compile-time assertion (C89-portable). */
+#define ZEVO_SA(cond, tag) typedef char zevo_sa_##tag[(cond) ? 1 : -1]
+
+/* ---- Segment kind. ---- */
+typedef enum zevo_seg_kind {
+  ZEVO_SEG_NOTE    = 0,
+  ZEVO_SEG_META    = 1,
+  ZEVO_SEG_VECTORS = 2,
+  ZEVO_SEG_WEIGHTS = 3,
+  ZEVO_SEG_MERKLE  = 4,
+  ZEVO_SEG_TEXT    = 5
+} zevo_seg_kind;
+
+/* ---- Quantization. ---- */
+typedef enum zevo_quant { ZEVO_Q4_0 = 0, ZEVO_Q8_0 = 1 } zevo_quant;
+
+/* ---- Modality. ---- */
+typedef enum zevo_mod {
+  ZEVO_MOD_TEXT_RAW   = 0,
+  ZEVO_MOD_AUDIO_PCM  = 1,
+  ZEVO_MOD_IMAGE_BGRA = 2,
+  ZEVO_MOD_VIDEO_BGRA = 3,
+  ZEVO_MOD_FUSED_5D   = 4
+} zevo_mod;
+
+/* ---- 5D OLAP spherical vector — concrete POD, no abstraction. ---- */
+typedef struct zevo_vec5d {
+  zevo_f32 o;                      /* O : origin bias        */
+  zevo_f32 x;                      /* X : horizontal         */
+  zevo_f32 y;                      /* Y : vertical           */
+  zevo_f32 z;                      /* Z : depth              */
+  zevo_f32 r;                      /* R : radial base axis   */
+  zevo_f32 qw, qx, qy, qz;         /* spherical orientation  */
+  zevo_u32 modality;               /* zevo_mod tag           */
+  zevo_u32 flags;                  /* bit0 = fsverity-bound  */
+  zevo_u8  pad[20];                /* to 64 B total          */
+} zevo_vec5d;                      /* 64 B, 64-B aligned     */
+
+ZEVO_SA(sizeof(zevo_vec5d) == 64u, vec5d_64);
+
+/* ---- KV+info record. ---- */
+typedef struct zevo_kv {
+  zevo_u32 key_hash;    /* FNV-1a 32                          */
+  zevo_u16 key_len;
+  zevo_u16 val_len;
+  zevo_u8  val_type;    /* 0=u64 1=f64 2=utf8 3=blob 4=vec5d  */
+  zevo_u8  flags;
+  zevo_u16 reserved;
+  zevo_u32 crc32c;      /* key || val                         */
+} zevo_kv;              /* 16 B header + key + val, 32-B aligned */
+
+ZEVO_SA(sizeof(zevo_kv) == 16u, kv_16);
+
+/* ---- Manifest note payload. ---- */
+typedef struct zevo_manifest {
+  zevo_u32 magic0, magic1, version;
+  zevo_u32 quant;
+  zevo_u64 n_params;
+  zevo_u64 n_layers;
+  zevo_u32 hidden_dim;
+  zevo_u32 n_heads;
+  zevo_u32 n_kv_heads;
+  zevo_u32 vocab_size;
+  zevo_u32 ctx_len;
+  zevo_u32 rope_theta_bits;
+  zevo_u64 seg_off[6];      /* ZEVO_SEG_* offsets  */
+  zevo_u64 seg_len[6];      /* ZEVO_SEG_* lengths  */
+  zevo_u8  merkle_root[32]; /* SHA-256 of segment roots */
+  zevo_u8  reserved[72];    /* pad to 256 B, 64-aligned */
+} zevo_manifest;
+
+ZEVO_SA(sizeof(zevo_manifest) == 256u, manifest_256);
+
+/* ---- Quant blocks (llama.cpp-compatible). ---- */
+typedef struct zevo_blk_q4_0 {
+  zevo_u16 d;               /* f16 scale               */
+  zevo_u8  qs[16];          /* 32 × 4-bit nibbles      */
+} zevo_blk_q4_0;            /* 18 B → disk stride 64 B */
+
+typedef struct zevo_blk_q8_0 {
+  zevo_u16 d;
+  zevo_i8  qs[32];
+} zevo_blk_q8_0;            /* 34 B → disk stride 64 B */
+
+ZEVO_SA(sizeof(zevo_blk_q4_0) == 18u, q4_0_18);
+ZEVO_SA(sizeof(zevo_blk_q8_0) == 34u, q8_0_34);
+
+#endif /* ZEVO_LAYOUT_H */
+```
+
+**Padding rule (normative):** A block row of `K` blocks occupies `K * stride` bytes where `stride = 64`. Trailing bytes are `0x00` and excluded from `crc32c` and Merkle.
+
+---
+
+## 4. KV+info Region — Layout and Lookup
+
+The `.zevo.meta` region is a **sorted, flat array** of KV records; no hash table, no pointers, no indirection. Lookup is binary search on `key_hash` — deterministic, `O(log n)`, no allocation.
+
+```
+.zevo.meta
+┌────────────────────────────────────────────────────────────┐
+│ header: { n_records:u32, reserved:u32, total_len:u64 }     │  ← 64-B aligned
+├────────────────────────────────────────────────────────────┤
+│ record[0] : zevo_kv (16 B) | key | val | pad-to-32         │
+│ record[1] : ...                                            │
+│ ...                                                        │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Canonical keys (mandatory):**
+
+| Key | Type | Meaning |
+|---|---|---|
+| `zevo.format` | u64 | `ZEVO_VER` |
+| `zevo.model.name` | utf8 | `Zevo-64B-Chatbot-Instruct-v0.1-Q8_0` |
+| `zevo.model.quant` | u64 | `ZEVO_Q8_0` |
+| `zevo.llm.n_params` | u64 | e.g. `64_000_000_000` |
+| `zevo.llm.ctx` | u64 | `131072` |
+| `zevo.rope.theta` | f64 | `1.0e6` |
+| `zevo.5d.origin` | vec5d | fused origin |
+| `zevo.learn.eta` | f64 | `1.0e-4` |
+| `zevo.learn.entropy_floor` | f64 | `0.10` |
+| `zevo.crypto.kdf` | utf8 | `HKDF-SHA256` |
+| `zevo.crypto.aead` | utf8 | `AES-256-GCM` |
+| `zevo.crypto.sig` | utf8 | `Ed25519` |
+| `zevo.api.rotate_s` | u64 | `100800` (28 h) |
+
+**Pure lookup wrapper:**
+
+```c
+/*
+ * zevo_kv_find : const zevo_u8 *base, zevo_u32 n, const char *key -> const zevo_kv *
+ *   Pure in (base, n, key). Binary search on FNV-1a(key).
+ *   Returns NULL if absent. No allocation, no I/O.
+ */
+static const zevo_kv *zevo_kv_find(const zevo_u8 *base,
+                                   zevo_u32       n,
+                                   const char    *key);
+```
+
+---
+
+## 5. mmap + Exclusive Access Discipline
+
+The container is mapped **once**, at startup, in a single `mmap` call covering the whole file. Sub-regions are addressed via `base + seg_off[k]`. This keeps the mapping count at 1, keeps `VmSize` predictable, and makes the fs-verity digest cover the entire addressable surface.
+
+```c
+/* zevo_map.h */
+#ifndef ZEVO_MAP_H
+#define ZEVO_MAP_H
+
+#include "zevo_layout.h"
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
+/*
+ * zevo_open_excl : const char *path -> int
+ *   Open with O_RDONLY|O_CLOEXEC|O_NOFOLLOW. If O_CREAT is ever used by a
+ *   writer, O_EXCL guarantees no clobbering of an existing artifact.
+ *   Returns fd, or -errno.
+ */
+static int zevo_open_excl(const char *path)
+{
+  int fd;
+  if (path == NULL) return -EINVAL;
+  fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  return (fd < 0) ? -errno : fd;
+}
+
+/*
+ * zevo_map_ro_excl : int fd, size_t len -> const zevo_u8 *
+ *   Whole-file MAP_PRIVATE|PROT_READ. Never writable. MAP_POPULATE for
+ *   deterministic first-touch. No MAP_SHARED: page cache is shared by
+ *   kernel, but the process view is private and read-only.
+ */
+static const zevo_u8 *zevo_map_ro_excl(int fd, size_t len)
+{
+  void *p;
+  if (fd < 0 || len == 0u) return NULL;
+  p = mmap(NULL, len, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+  return (p == MAP_FAILED) ? NULL : (const zevo_u8 *)p;
+}
+
+/*
+ * zevo_writer_lock : int fd -> int
+ *   Writers only. flock(LOCK_EX|LOCK_NB). Readers never call.
+ */
+static int zevo_writer_lock(int fd)
+{
+  if (fd < 0) return -EINVAL;
+  if (flock(fd, LOCK_EX | LOCK_NB) != 0) return -errno;
+  return 0;
+}
+
+#endif /* ZEVO_MAP_H */
+```
+
+**Exclusivity guarantees:**
+
+| Actor | Open flags | Lock | Access |
+|---|---|---|---|
+| Reader (core) | `O_RDONLY\|O_CLOEXEC\|O_NOFOLLOW` | none | `PROT_READ`, private view |
+| Writer (builder) | `O_RDWR\|O_CREAT\|O_EXCL` | `LOCK_EX` | `PROT_WRITE`, one at a time |
+| Auditor | `O_RDONLY` | `LOCK_SH` | read-only, parallel with readers |
+
+`.zevo.meta`, `.zevo.vectors`, `.zevo.weights` are **never** opened for writing outside the signed builder step. fs-verity seal makes any post-seal write a fatal integrity event on next open.
+
+---
+
+## 6. Inline Assembly — Syscall Boundary
+
+Only the syscall trampoline uses inline asm. C89 forbids `//` comments; every comment below is a `/* ... */` block, and every pure wrapper is annotated with its referential-transparency contract.
+
+```c
+/* zevo_sys.h */
+#ifndef ZEVO_SYS_H
+#define ZEVO_SYS_H
+
+#if defined(__x86_64__)
+/*
+ * zevo_sys3 : long n, a1, a2, a3 -> long
+ *   Pure modulo the kernel's observable state. Clobbers rcx, r11 per
+ *   SysV AMD64. No libc, no errno translation (raw negative on error).
+ */
+static long zevo_sys3(long n, long a1, long a2, long a3)
+{
+  long ret;
+  __asm__ __volatile__ (
+    "syscall"
+    : "=a"(ret)
+    : "a"(n), "D"(a1), "S"(a2), "d"(a3)
+    : "rcx", "r11", "memory"
+  );
+  return ret;
+}
+#elif defined(__i386__)
+/*
+ * zevo_sys3 : legacy sysenter path (32-bit only).
+ *   Kept for auditability; gated by CPUID at process start.
+ */
+static long zevo_sys3(long n, long a1, long a2, long a3)
+{
+  long ret;
+  __asm__ __volatile__ (
+    "pushl %%ebp; movl %%esp, %%ebp; sysenter; movl %%ebp, %%esp; popl %%ebp"
+    : "=a"(ret) : "a"(n), "b"(a1), "c"(a2), "d"(a3) : "memory"
+  );
+  return ret;
+}
+#else
+#  error "Zevo targets x86_64 (and legacy i386 sysenter)."
+#endif
+
+#endif /* ZEVO_SYS_H */
+```
+
+**All other peripheral access goes through libc wrappers** which the toolchain lowers to `syscall` under the hood — matching the brief's "libc wrappers that resolve to the syscall instruction on x86_64".
+
+---
+
+## 7. Multimodal Deterministic Pipeline → 5D Fused Vector
+
+The pipeline is a **pure fold** `F : Inputs → zevo_vec5d`, run under the FSM state `FUSE`, with all weights drawn from `.zevo.meta` and all code paths branch-deterministic (no NaN, no denormals — set `MXCSR` to FTZ+DAZ).
+
+```
+Text Raw   ─▶ NFC normalize ─▶ byte histogram H_t ───────┐
+Audio PCM  ─▶ 48 kHz/24 LE ─▶ STFT(1024,256) ─▶ H_a ─────┤
+Image BGRA ─▶ 8K HDR ─▶ BGRA→linear ─▶ H_i ──────────────┼─▶ Fuse_5D ─▶ zevo_vec5d
+Video BGRA ─▶ 60 fps ─▶ Δ-frame ─▶ H_v ──────────────────┤
+                                                          │
+                            Shannon entropy  H(p)=-Σ p log2 p
+                                                          │
+                                                          ▼
+                                            (O, X, Y, Z, R) + quaternion
+```
+
+**Fusion:**
+
+```
+O = normalize(H_t)                            /* origin bias    */
+X = normalize(H_i·w_i + H_v·w_v)              /* horizontal     */
+Y = normalize(H_a·w_a)                        /* vertical       */
+Z = normalize(H_t·w_t)                        /* depth          */
+R = || (O,X,Y,Z) ||_2                         /* radial base    */
+q = slerp(q_prev, q_cur, α=0.5)               /* orientation    */
+```
+
+All `w_*` are `f64` KV records. All vector math is `f32`. Rounding: IEEE-754 round-to-nearest-even, fixed.
+
+---
+
+## 8. Autonomous Decision Core — FSM × Fuzzy-Neural-Mesh
+
+The core's decision loop is a **deterministic finite state machine** whose `DECIDE` state is a **Mamdani fuzzy inference** over the fused 5D vector, with **Shannon entropy** used as a bounded self-learning gain.
+
+### 8.1 FSM
+
+```
+States:  IDLE → INGEST → FUSE → INFER → DECIDE → EMIT → HALT
+Guards:  pure predicate functions const zevo_u8 * → int
+Budget:  DECIDE must complete within 16.67 ms (1 video frame)
+         on overrun → HALT (fail-closed)
+```
+
+Transition table is a `const` array — no dynamic dispatch, no function pointers on the hot path.
+
+### 8.2 Fuzzy MFs + Mamdani
+
+```
+μ_low(x)  = max(0, 1 - x/0.33)
+μ_mid(x)  = max(0, 1 - |x-0.5|/0.33)
+μ_high(x) = max(0, 1 - (1-x)/0.33)
+Aggregation : min
+Defuzzify   : centroid over 7-point discretization
+```
+
+### 8.3 Shannon gain for self-learning
+
+```
+H(p) = -Σ p_i·log2(p_i)
+Δw   = η · (1 - H/H_max) · ∂L/∂w
+η    = 1e-4 (from KV: zevo.learn.eta)
+```
+
+All updates are bounded, logged, and reversible; weights on disk are never mutated in place — a new container is emitted and re-sealed.
+
+---
+
+## 9. fs-verity + Merkle
+
+```
+.zevo.merkle
+┌───────────────────────────────────────────────────────────┐
+│ segment_root[0..5] : SHA-256 per segment                  │
+│ merkle_root[32]    : SHA-256(segment_root[0..5])          │
+│ fsverity_alg       : u32 = FS_VERITY_HASH_ALG_SHA256      │
+│ reserved           : 0-filled to page boundary            │
+└───────────────────────────────────────────────────────────┘
+```
+
+Enable:
+
+```
+$ fsverity enable Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin \
+      --hash-alg=sha256 --block-size=4096 --salt=<32B>
+$ fsverity measure Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin
+```
+
+Any post-seal modification causes `EIO` on next read — deterministic, kernel-enforced, no userspace trust required.
+
+---
+
+## 10. Cryptographic Services (NIST-aligned)
+
+| Purpose | Primitive | Standard |
+|---|---|---|
+| Segment / Merkle integrity | SHA-256 | FIPS 180-4 |
+| API-key signature | Ed25519 | FIPS 186-5 |
+| Session AEAD | AES-256-GCM | NIST SP 800-38D |
+| Key derivation for rotation | HKDF-SHA-256 | SP 800-107 / RFC 5869 |
+| fs-verity root | SHA-256 | kernel fs-verity |
+
+**28-hour key rotation:**
+
+```
+interval = 100800 s (28 h), monotonic CLOCK_MONOTONIC
+overlap  = 300 s
+roll     = atomic rename(2) on sealed memfd holding keyring
+```
+
+Old keys invalid outside overlap; every request carries `key_id` so the Secure Service API can reject stale keys immediately.
+
+---
+
+## 11. Published IPC API — Weight-Free, Stateless Client
+
+**Transport:** Unix-domain `SOCK_SEQPACKET` at `/run/zevo/core.sock`, mode `0660`, group `zevo`.
+
+**Message envelope (length-prefixed, Ed25519-signed):**
+
+```
+REQ  { ver:u32, key_id:u64, nonce[12], ct_len:u32, ct, sig[64] }
+RESP { ver:u32, key_id:u64, nonce[12], ct_len:u32, ct, sig[64] }
+```
+
+**Client properties (mandatory):**
+
+- Holds **no** weights, **no** vectors, **no** metadata.
+- Holds **no** long-lived secrets beyond the 28-hour key_id reference.
+- Can be killed, restarted, and horizontally scaled freely.
+- Web-responsive: browser ⇄ HTTPS ⇄ stateless relay ⇄ Unix socket ⇄ core.
+
+The relay terminates TLS with OpenSSL, forwards bytes verbatim, and holds zero model state.
+
+---
+
+## 12. End-to-End Flow (restating the brief, made concrete)
+
+```
+[ Zevo AI-Driven Community Virtual Assistance · web-responsive ]
+     │  user input: Text Raw | Audio PCM | Image BGRA | Video BGRA
+     ▼
+[ HTTPS → stateless relay → Unix SOCK_SEQPACKET ]
+     │  signed REQ (Ed25519), AES-256-GCM payload
+     ▼
+[ Zevo AI-Driven Core Virtual Assistance ]
+     │  seccomp-bpf · cap-bounding · LSM · no_new_privs
+     │  mmap(Zevo-*.bin, PROT_READ, MAP_PRIVATE, MAP_POPULATE)
+     │  fs-verity verified on first read
+     │
+     │  FSM: IDLE → INGEST → FUSE → INFER → DECIDE → EMIT
+     │      INGEST : parse modality, build histograms
+     │      FUSE   : 5D OLAP spherical fusion → zevo_vec5d
+     │      INFER  : LLM forward on Q4_0/Q8_0 weights
+     │      DECIDE : Fuzzy-Neural-Mesh + Mamdani + Shannon gain
+     │      EMIT   : produce thought output vector + text
+     ▼
+[ signed RESP ] → [ relay ] → [ Community client ]
+```
+
+Everything on the core side is `const` after load. The only mutable state is (a) the sealed keyring memfd and (b) the in-process FSM state.
+
+---
+
+## 13. Zevo™ — Avatar, Naming, Trademark
+
+- Title: **Zevo™**
+- Subtitle: **An 5D artificial intelligence virtual assistant**
+- Avatar: original AI cartoon character, Pixar-*inspired* aesthetic — no Pixar assets, no derived models, no trademark conflict.
+- Animation rigs (if bundled) are stored as `zevo_vec5d` + quaternions inside `.zevo.vectors`, subject to the same fs-verity seal as weights.
+
+---
+
+## 14. Invariants That Must Hold (Audit Checklist)
+
+| # | Invariant | Enforcement |
+|---|---|---|
+| 1 | File is `ET_DYN`, single `PT_LOAD` per segment, `p_align = 4096` | `readelf -lW` |
+| 2 | Every segment starts at a 4096-byte multiple | build script assert |
+| 3 | Every internal field is 32- or 64-byte aligned | `ZEVO_SA` in headers |
+| 4 | `.zevo.meta`, `.zevo.vectors`, `.zevo.weights` mapped `PROT_READ`, `MAP_PRIVATE` | `zevo_map_ro_excl` |
+| 5 | No writable mapping exists in the core after startup | `mprotect` audit + `smaps` |
+| 6 | fs-verity enabled and measuring | `fsverity measure` |
+| 7 | Q4_0 blocks are 18 B logical / 64 B disk stride; Q8_0 34 B / 64 B | static asserts |
+| 8 | 5D vectors are 64 B POD, no indirection | `ZEVO_SA` |
+| 9 | KV lookup is binary search on FNV-1a hash | unit test |
+| 10 | DECIDE completes within 16.67 ms or transitions to HALT | runtime budget |
+| 11 | Key rotation every 100800 s, 300 s overlap | HKDF + memfd rename |
+| 12 | Client is weight-free and stateless | IPC contract test |
+
+---
+
+## 15. What This Document Does and Does Not Claim
+
+**Does:**
+
+- Fix the ELF Image internal structure as `ET_DYN` with six page-aligned segments.
+- Bind the 5D OLAP spherical vector to a concrete 64-byte POD (`zevo_vec5d`).
+- Specify Q4_0 / Q8_0 disk layout with 64-byte stride.
+- Specify KV+info, mmap, and exclusive access discipline in C89.
+- Specify fs-verity + Merkle + 28-hour rotation under the stated NIST standards.
+- Specify the FSM × Fuzzy-Neural-Mesh × Mamdani × Shannon decision core.
+- Specify the weight-free, stateless IPC client contract.
+
+**Does not:**
+
+- Claim the format *is* the model — it is the container and access discipline.
+- Claim Mamdani + FSM + Shannon *constitute* deep-learning self-learning; they are the bounded, auditable decision layer around a quantized LLM.
+- Reproduce any third-party assets, code, or trademarks.
+
+---
+
+**Next artifacts I can emit immediately, in the same style and constraints:**
+
+1. `zevo_note.c` — writes the `SHT_NOTE` `.zevo.note` section and manifest.
+2. `zevo_q4q8.c` — dequant kernels (portable C89 + AVX2 guarded by `#ifdef __AVX2__`).
+3. `zevo_mamdani.c` — rule-table compiler and centroid defuzzifier.
+4. `zevo_merkle.c` + `Makefile` — fs-verity seal, per-segment SHA-256, `readelf` audit target.
+5. `zevo_ipc.c` — the `SOCK_SEQPACKET` core and stateless relay shim.
+
+Say which and I will produce it.
+
+---
+---
+
 <img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/b6516b11-52de-4000-849f-5da007c71968" />
 
 ---
