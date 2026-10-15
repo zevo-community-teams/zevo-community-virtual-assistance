@@ -10,7 +10,7 @@
 
 ### Zevo™ ELF Image Binary Format — Internal Structure Specification
 #### Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin / Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin
-**Subtitle:** *An 5D artificial intelligence virtual assistant*
+**Subtitle:** *An 5D artificial intelligence community virtual assistant*
 
 ---
 
