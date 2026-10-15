@@ -1,3 +1,11 @@
+---
+---
+
+<img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/cca71c16-1515-470b-a63d-156d09a8e28b" />
+
+---
+---
+
 <img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/be1cee2e-7fbf-473a-8479-24996d4025e2" />
 
 ---
@@ -757,11 +765,6 @@ The result is a **secure-by-construction, reproducible, auditable, and accessibl
 | Subtitle | An 5D artificial intelligence virtual assistant |
 
 **End of specification.**
-
----
----
-
-<img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/cca71c16-1515-470b-a63d-156d09a8e28b" />
 
 ---
 ---
