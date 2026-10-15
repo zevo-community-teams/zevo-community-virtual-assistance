@@ -3,6 +3,11 @@
 ---
 ---
 
+<img width="832" height="448" alt="Image" src="https://github.com/user-attachments/assets/7a4b17a2-5101-4f0d-9225-f0fa7b3c13ea" />
+
+---
+---
+
 ### Zevo™ ELF Image Binary Format — Internal Structure Specification
 #### Zevo-64B-Chatbot-Instruct-v0.1-Q8_0.bin / Zevo-32B-Chatbot-Instruct-v0.1-Q4_0.bin
 **Subtitle:** *An 5D artificial intelligence virtual assistant*
