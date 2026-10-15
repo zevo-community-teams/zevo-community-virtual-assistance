@@ -557,7 +557,7 @@ Everything on the core side is `const` after load. The only mutable state is (a)
 
 - Title: **Zevo™**
 - Subtitle: **An 5D artificial intelligence virtual assistant**
-- Avatar: original AI cartoon character, Pixar-*inspired* aesthetic — no Pixar assets, no derived models, no trademark conflict.
+- Avatar: original AI Avatar animated character, no Pixar assets, no derived models, no trademark conflict.
 - Animation rigs (if bundled) are stored as `zevo_vec5d` + quaternions inside `.zevo.vectors`, subject to the same fs-verity seal as weights.
 
 ---
